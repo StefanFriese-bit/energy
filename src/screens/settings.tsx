@@ -4,7 +4,8 @@ import { isSignedIn, signedInAs, signIn, signOut, snapshot, HiveError, type Sign
 import { reloadHeating, useHeating } from '../lib/heating-state';
 import { isTwoRate } from '../lib/cost';
 import type { Account } from '../lib/octopus';
-import { updateSettings } from '../lib/store';
+import { applyTransfer, hasOctopus, transfersIn, updateSettings } from '../lib/store';
+import { makeCode, mergeWeeks, readCode } from '../lib/transfer';
 import { Problem, Segment, useStore } from '../ui';
 
 const API_PAGE = 'https://octopus.energy/dashboard/new/accounts/personal-details/api-access';
@@ -14,13 +15,75 @@ export function SettingsScreen() {
     <>
       <h1>Settings</h1>
       <p class="small">Everything here stays on this phone. The app talks only to Octopus and Hive, directly.</p>
-      <OctopusSettings />
+      <OtherDevices />
+      <OctopusKeyed />
       <HiveSettings />
       <section class="card">
         <b>About</b>
         <p class="small">Home Energy, built {__BUILD_DATE__}. Prices include VAT. Gas in kWh = m³ × 1.02264 × calorific value ÷ 3.6, the same sum as on the bill.</p>
       </section>
     </>
+  );
+}
+
+/** Re-reads the Octopus boxes when settings arrive from another device. */
+function OctopusKeyed() {
+  useStore();
+  return <OctopusSettings key={transfersIn} />;
+}
+
+function OtherDevices() {
+  const st = useStore();
+  const [code, setCode] = useState<string | null>(null);
+  const [copied, setCopied] = useState<'ok' | 'manual' | null>(null);
+  const [paste, setPaste] = useState('');
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const fresh = !hasOctopus(st.settings);
+  const copy = async () => {
+    const c = makeCode(st.settings, st.weeks);
+    setCode(c); setMsg(null);
+    try { await navigator.clipboard.writeText(c); setCopied('ok'); } catch { setCopied('manual'); }
+  };
+  const take = (raw: string) => {
+    const r = readCode(raw);
+    if ('error' in r) return setMsg({ ok: false, text: r.error });
+    applyTransfer(r, mergeWeeks);
+    setPaste('');
+    const got = [r.settings.octopusKey ? 'Octopus details' : '', Object.keys(r.settings).length ? 'bill settings' : '', r.weeks.length ? `${r.weeks.length} saved week${r.weeks.length === 1 ? '' : 's'}` : ''].filter(Boolean);
+    setMsg({ ok: true, text: `Done: ${got.join(', ')} taken over. Hive is the one thing to do here yourself: sign in below (one text-message code).` });
+  };
+  const pasteNow = async () => {
+    try { const t = await navigator.clipboard.readText(); setPaste(t); take(t); }
+    catch { setMsg({ ok: false, text: 'This browser would not hand over the clipboard. Press and hold the box below, choose Paste, then "Use these settings".' }); }
+  };
+  const pasteBox = (
+    <>
+      <div class="actions"><button type="button" class={`btn${fresh ? ' primary' : ''}`} onClick={pasteNow}>Paste settings from my other device</button></div>
+      <textarea class="code" rows={2} placeholder="…or paste the code here" aria-label="Settings code" value={paste} onInput={(e) => setPaste((e.target as HTMLTextAreaElement).value)} />
+      {paste.trim() && <button type="button" class="btn" onClick={() => take(paste)}>Use these settings</button>}
+    </>
+  );
+  return (
+    <section class="card">
+      <b>Other devices</b>
+      <p class="small">Set up on one device, then copy everything across (Octopus details, bill settings, saved heating weeks). Between your Mac and iPhone on the same Apple ID: press Copy on one, Paste on the other. Nothing goes through any server.</p>
+      {fresh && pasteBox}
+      {!fresh && (
+        <>
+          <div class="actions"><button type="button" class="btn primary" onClick={copy}>{copied === 'ok' ? 'Copied ✓' : 'Copy settings for another device'}</button></div>
+          {copied === 'ok' && <p class="good-box">Copied. On the other device open this app ▸ Settings ▸ <b>Paste settings from my other device</b>.</p>}
+          {code && (
+            <details open={copied === 'manual'}>
+              <summary class="small">{copied === 'manual' ? 'Copying did not work here: select the code and copy it by hand' : 'Show the code (to send by message to someone else in the house)'}</summary>
+              <textarea class="code" rows={3} readOnly aria-label="Your settings code" value={code} onFocus={(e) => (e.target as HTMLTextAreaElement).select()} />
+              <p class="small">The code contains your Octopus API key: only send it to people you would give the key to.</p>
+            </details>
+          )}
+          <details><summary class="small">Paste settings from another device instead</summary>{pasteBox}</details>
+        </>
+      )}
+      {msg && (msg.ok ? <p class="good-box" role="status">{msg.text}</p> : <Problem>{msg.text}</Problem>)}
+    </section>
   );
 }
 

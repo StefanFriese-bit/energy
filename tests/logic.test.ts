@@ -184,3 +184,34 @@ describe('Hive thermostat reading', () => {
     expect(list[0].schedule?.friday).toHaveLength(4);
   });
 });
+
+import { makeCode, mergeWeeks, readCode } from '../src/lib/transfer';
+import { DEFAULT_SETTINGS } from '../src/lib/store';
+
+describe('moving settings to another device', () => {
+  const w = fromHive(hiveWeek)!;
+  const settings = { ...DEFAULT_SETTINGS, octopusAccount: 'A-1234ABCD', octopusKey: 'sk_live_test', pay: 'NON_DIRECT_DEBIT' as const, calorific: 39.2, nightStart: '01:00' };
+  const weeks = [{ id: 'w1', name: 'Winter ❄️', week: w, saved: 1 }];
+
+  it('a copied code brings back exactly the same settings and weeks', () => {
+    const r = readCode(makeCode(settings, weeks));
+    expect(r).toEqual({ settings, weeks });
+  });
+  it('survives being pasted with spaces, line breaks or text around it (a message app may add them)', () => {
+    const code = makeCode(settings, weeks);
+    const r = readCode(`Here you go:\n${code.slice(0, 30)}\n ${code.slice(30)}  `);
+    expect('error' in r).toBe(false);
+  });
+  it('refuses rubbish, a cut-short code and unknown values plainly', () => {
+    expect(readCode('hello')).toEqual({ error: expect.stringMatching(/not a settings code/) });
+    expect(readCode(makeCode(settings, weeks).slice(0, 40))).toEqual({ error: expect.stringMatching(/cut short/) });
+    const bad = readCode(makeCode({ ...settings, pay: 'BITCOIN' as any, calorific: 900 }, [{ id: 'x', name: 'Broken', week: { monday: [] } as any, saved: 1 }]));
+    expect('error' in bad ? null : bad.settings.pay).toBeUndefined();
+    expect('error' in bad ? null : bad.settings.calorific).toBeUndefined();
+    expect('error' in bad ? null : bad.weeks).toEqual([]);
+  });
+  it('saved weeks: the incoming one replaces a same-named one, the rest stay', () => {
+    const mine = [{ id: 'a', name: 'winter ❄️', week: w, saved: 0 }, { id: 'b', name: 'Away', week: w, saved: 0 }];
+    expect(mergeWeeks(mine, weeks).map((x) => x.id)).toEqual(['b', 'w1']);
+  });
+});

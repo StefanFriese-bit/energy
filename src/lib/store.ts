@@ -55,3 +55,11 @@ export function saveWeek(name: string, week: Week) {
   set({ ...state, weeks: existing ? state.weeks.map((w) => (w.id === existing.id ? entry : w)) : [...state.weeks, entry] });
 }
 export function deleteWeek(id: string) { set({ ...state, weeks: state.weeks.filter((w) => w.id !== id) }); }
+
+/** Takes in settings and saved weeks copied from another device (see transfer.ts). */
+/** Counts settings taken in from another device, so screens holding typed-in copies can refresh. */
+export let transfersIn = 0;
+export function applyTransfer(t: { settings: Partial<Settings>; weeks: SavedWeek[] }, mergeWeeks: (a: SavedWeek[], b: SavedWeek[]) => SavedWeek[]) {
+  transfersIn++;
+  set({ settings: { ...state.settings, ...t.settings }, weeks: mergeWeeks(state.weeks, t.weeks) });
+}

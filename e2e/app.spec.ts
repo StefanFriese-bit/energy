@@ -285,3 +285,39 @@ test('the Hive sign-in library loads and starts in the browser (no Node-only par
   expect(cognito).toBe(1);
   expect(errors).toEqual([]);
 });
+
+test('another device: set up once, copy, paste on the other — Octopus + weeks come across, Hive sign-in does not', async ({ browser, browserName }) => {
+  // Device A: set up, save a week, copy.
+  const a = await browser.newContext({ serviceWorkers: 'block', timezoneId: 'Europe/London' });
+  if (browserName === 'chromium') await a.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const pa = await a.newPage();
+  await fakeServices(pa);
+  await connectOctopus(pa);
+  await open(pa, '#/schedule');
+  await pa.getByLabel('Name for this week').fill('Winter');
+  await pa.getByRole('button', { name: 'Save this week' }).click();
+  await open(pa, '#/settings');
+  await pa.getByRole('button', { name: 'Copy settings for another device' }).click();
+  const box = pa.getByLabel('Your settings code');
+  if (!(await box.isVisible())) await pa.getByText(/Show the code|Copying did not work/).click();
+  const code = await box.inputValue();
+  expect(code).toMatch(/^HOMEENERGY-1:/);
+  if (browserName === 'chromium') expect(await pa.evaluate(() => navigator.clipboard.readText())).toBe(code);
+
+  // Device B: brand new, not signed in to anything.
+  const b = await browser.newContext({ serviceWorkers: 'block', timezoneId: 'Africa/Johannesburg' });
+  const pb = await b.newPage();
+  await fakeServices(pb, { hive: false });
+  await pb.goto('#/settings');
+  await expect(pb.getByRole('button', { name: 'Paste settings from my other device' })).toBeVisible();
+  await pb.getByLabel('Settings code').fill(`\n${code} `);
+  await pb.getByRole('button', { name: 'Use these settings' }).click();
+  await expect(pb.getByText(/Done: Octopus details, bill settings, 1 saved week taken over/)).toBeVisible();
+  await expect(pb.getByLabel('Account number')).toHaveValue('A-1234ABCD');
+  await expect(pb.getByLabel('Email')).toBeVisible(); // Hive: still to sign in on this device
+  await open(pb, '#/usage');
+  await expect(pb.locator('.big-number')).toHaveText(/£/);
+  await open(pb, '#/schedule');
+  await expect(pb.getByText('Sign in to Hive to see and change the heating schedule.')).toBeVisible();
+  await a.close(); await b.close();
+});

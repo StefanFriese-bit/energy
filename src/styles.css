@@ -32,6 +32,9 @@ input[type=text], input[type=email], input[type=password], input[type=number], i
 .field > span { display: block; font-size: .9rem; color: var(--muted); margin-bottom: 4px; }
 .with-btn { display: flex; gap: 8px; }
 .with-btn input { flex: 1; min-width: 0; }
+textarea.code { width: 100%; font: 13px/1.35 ui-monospace, Menlo, monospace; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--ink); word-break: break-all; margin: 8px 0; }
+details { margin: 8px 0; }
+summary { cursor: pointer; padding: 6px 0; }
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
 .btn {
