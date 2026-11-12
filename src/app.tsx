@@ -22,6 +22,12 @@ export function App() {
   const tab = route.name === 'day' ? 'schedule' : route.name === 'waterday' ? 'water' : route.name;
   return (
     <>
+      <header class="appbar">
+        <div class="appbar-in">
+          <span class="brand"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z" fill="currentColor" /></svg>Home Energy</span>
+          <span class="where">{TABS.find(([id]) => id === tab)?.[1]}</span>
+        </div>
+      </header>
       <main>
         {route.name === 'now' && <NowScreen />}
         {route.name === 'schedule' && <ScheduleScreen />}

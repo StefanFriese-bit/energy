@@ -4,8 +4,9 @@ import { getAccount, importMeter, productName, upcomingRates } from '../lib/data
 import type { Account, Meter } from '../lib/octopus';
 import { hasOctopus, type Settings } from '../lib/store';
 import { addDays, clock, dayKey, londonMidnight, niceDay } from '../lib/time';
-import { Bars, Problem, Spinner, useStore, type Bar } from '../ui';
-import { ELEC, GAS } from './usage';
+import { Chart } from '../chart';
+import { Problem, Spinner, useStore } from '../ui';
+import { AVG, ELEC, GAS } from './usage';
 
 export interface TariffNow {
   meter: Meter; tariff: string; name: string; since: number;
@@ -101,7 +102,9 @@ function TariffCard({ t }: { t: TariffNow }) {
   const [pick, setPick] = useState<number | null>(null);
   const elec = t.meter.kind === 'electricity';
   const now = Date.now();
-  const bars: Bar[] | null = t.slots?.map((x) => ({ label: clock(x.from).endsWith(':00') && +clock(x.from).slice(0, 2) % 6 === 0 ? clock(x.from).slice(0, 2) : '', values: [Math.max(0, x.p)], title: `${niceDay(dayKey(x.from))} ${clock(x.from)}: ${pence(x.p)}/kWh`, dim: x.to <= now })) ?? null;
+  const slots = t.slots;
+  const avg = slots?.length ? slots.reduce((a, x) => a + x.p, 0) / slots.length : null;
+  const nowAt = slots ? slots.findIndex((x) => x.from <= now && now < x.to) : -1;
   const cheap = t.slots ? cheapestWindow(t.slots, 6, now) : null;
   const neg = t.slots?.filter((x) => x.to > now && x.p < 0) ?? [];
   return (
@@ -119,11 +122,18 @@ function TariffCard({ t }: { t: TariffNow }) {
         <div><span class="meta">Standing charge</span><strong>{t.standing != null ? pence(t.standing) : '–'}</strong><span class="meta">per day</span></div>
       </div>
       <p class="small">On this tariff since {niceDay(dayKey(t.since), true)}.</p>
-      {bars && (
+      {slots && (
         <>
-          <h3>Price per half hour, today{bars.length > 50 ? ' and tomorrow' : ' (tomorrow comes out around 4 pm)'}</h3>
-          <Bars bars={bars} colours={[elec ? ELEC : GAS]} selected={pick} onPick={setPick} height={110} />
-          <p class="pick-line">{pick != null ? bars[pick].title : 'Tap a bar for its price.'}</p>
+          <h3>Price per half hour, today{slots.length > 50 ? ' and tomorrow' : ' (tomorrow comes out around 4 pm)'}</h3>
+          <Chart
+            labels={slots.map((x) => (clock(x.from).endsWith(':00') && +clock(x.from).slice(0, 2) % 6 === 0 ? clock(x.from).slice(0, 2) : ''))}
+            titles={slots.map((x) => `${niceDay(dayKey(x.from))} ${clock(x.from)}: ${pence(x.p)}/kWh`)}
+            series={[{ kind: 'bar', name: 'Price', colour: elec ? ELEC : GAS, values: slots.map((x) => Math.max(0, x.p)) }]}
+            dim={slots.map((x) => x.to <= now)}
+            divider={nowAt > 0 ? { at: nowAt, label: 'Now' } : null}
+            refLines={avg != null ? [{ value: avg, colour: AVG, label: `Average ${pence(Math.round(avg * 100) / 100)}` }] : []}
+            yFormat={(v) => `${Math.round(v)}p`} selected={pick} onPick={setPick} height={170} ariaLabel="Price per half hour" />
+          <p class="pick-line">{pick != null ? `${niceDay(dayKey(slots[pick].from))} ${clock(slots[pick].from)}: ${pence(slots[pick].p)}/kWh` : 'Tap a bar for its price.'}</p>
           {cheap && <p>Cheapest 3 hours ahead: from <b>{clock(cheap.from)}</b>{dayKey(cheap.from) !== dayKey(now) ? ` ${niceDay(dayKey(cheap.from))}` : ''}, average {pence(cheap.avg)}/kWh.</p>}
           {neg.length > 0 && <p class="good-box">Octopus pays you to use electricity in {neg.length} half hour{neg.length === 1 ? '' : 's'} ahead (price below zero).</p>}
         </>

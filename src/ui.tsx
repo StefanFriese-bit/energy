@@ -70,37 +70,6 @@ export function Problem({ children, retry }: { children: ComponentChildren; retr
 
 export const Spinner = ({ text = 'Loading…' }: { text?: string }) => <p class="loading" aria-live="polite"><span class="dot" /> {text}</p>;
 
-export interface Bar { label: string; values: number[]; title: string; dim?: boolean }
-/** A simple bar chart. `values` stack (e.g. electricity + gas); tap a bar to pick it. */
-export function Bars({ bars, colours, selected, onPick, height = 150, every = 1 }: { bars: Bar[]; colours: string[]; selected: number | null; onPick: (i: number | null) => void; height?: number; every?: number }) {
-  const max = Math.max(0.0001, ...bars.map((b) => b.values.reduce((a, v) => a + Math.max(0, v), 0)));
-  const w = 100 / Math.max(1, bars.length);
-  const gap = bars.length > 40 ? 0.15 : bars.length > 14 ? 0.25 : 0.35;
-  return (
-    <div class="chart">
-      <svg viewBox={`0 0 100 ${height}`} preserveAspectRatio="none" style={{ height: `${height}px` }} role="img" aria-label="Chart">
-        {bars.map((b, i) => {
-          let y = height;
-          return (
-            <g key={i} onClick={() => onPick(selected === i ? null : i)} class={`bar${selected === i ? ' sel' : ''}${b.dim ? ' dim' : ''}`}>
-              <rect x={i * w} y={0} width={w} height={height} fill="transparent" />
-              {b.values.map((v, k) => {
-                const h = (Math.max(0, v) / max) * (height - 6);
-                y -= h;
-                return <rect x={i * w + (w * gap) / 2} y={y} width={w * (1 - gap)} height={h} fill={colours[k]} rx={bars.length > 40 ? 0.2 : 0.6} />;
-              })}
-              <title>{b.title}</title>
-            </g>
-          );
-        })}
-      </svg>
-      <div class="chart-labels">
-        {bars.map((b, i) => <span style={{ width: `${w}%` }}>{i % every === 0 ? b.label : ''}</span>)}
-      </div>
-    </div>
-  );
-}
-
 export function Sheet({ title, onClose, children }: { title: string; onClose: () => void; children: ComponentChildren }) {
   useEffect(() => {
     const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };

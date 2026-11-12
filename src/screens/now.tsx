@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
-import { kwhText, pence, pounds, summarise } from '../lib/cost';
-import { getAccount, importMeter, loadUsage } from '../lib/data';
+import { kwhText, monthOutlook, pence, pounds, summarise } from '../lib/cost';
+import { getAccount, importMeter, loadUsage, type Usage } from '../lib/data';
 import { boost, boostWater, HiveError, isSignedIn, setMode, setTarget, stopBoost, type Heating, type HotWater } from '../lib/hive';
 import { applyHeating, applyWater, reloadHeating, useHeating } from '../lib/heating-state';
 import { nextChange, STEP, tempText } from '../lib/schedule';
@@ -16,7 +16,7 @@ export function NowScreen() {
   const s = useStore().settings;
   return (
     <>
-      <h1>Home energy</h1>
+      <h1>Now</h1>
       {isSignedIn() ? <HeatingCard /> : <div class="empty"><p>Sign in to Hive (Settings) to control the heating from here.</p><a class="btn" href="#/settings">Settings</a></div>}
       {isSignedIn() && <WaterCard />}
       {hasOctopus(s) ? <EnergyCard s={s} /> : <div class="empty"><p>Add your Octopus details (Settings) to see use, prices and cost.</p><a class="btn" href="#/settings">Settings</a></div>}
@@ -115,7 +115,7 @@ function WaterCard() {
   );
 }
 
-interface Snap { yesterday: { e: number; g: number; ek: number; gk: number }; month: { p: number; days: number; total: number; prevP: number }; price: TariffNow | null; hasGas: boolean; hasElec: boolean; latestDay: string | null }
+interface Snap { yesterday: { e: number; g: number; ek: number; gk: number }; month: { p: number; days: number; total: number; prevP: number; projected: number | null }; price: TariffNow | null; hasGas: boolean; hasElec: boolean; latestDay: string | null }
 
 async function snapshot(s: Settings): Promise<Snap> {
   const y = addDays(dayKey(Date.now()), -1);
@@ -134,9 +134,15 @@ async function snapshot(s: Settings): Promise<Snap> {
   const latest = Math.max(0, ...cur.map((u) => u?.latest ?? 0));
   return {
     yesterday: { e: yd('electricity')?.totalP ?? 0, g: yd('gas')?.totalP ?? 0, ek: yd('electricity')?.kwh ?? 0, gk: yd('gas')?.kwh ?? 0 },
-    month: { p: cur.reduce((a, u) => a + (u ? summarise(u.days).totalP : 0), 0), days, total: daysInMonth(month), prevP: prev.reduce((a, u) => a + (u ? summarise(u.days.slice(0, days)).totalP : 0), 0) },
+    month: { p: cur.reduce((a, u) => a + (u ? summarise(u.days).totalP : 0), 0), days, total: daysInMonth(month), projected: projectedOf(cur, daysInMonth(month)), prevP: prev.reduce((a, u) => a + (u ? summarise(u.days.slice(0, days)).totalP : 0), 0) },
     price, hasGas: kinds.includes('gas'), hasElec: kinds.includes('electricity'), latestDay: latest ? dayKey(latest) : null,
   };
+}
+
+/** The same projection as the Usage screen's month graph: each fuel's average day carried to the month end, added up. */
+function projectedOf(cur: (Usage | null)[], monthDays: number): number | null {
+  const o = cur.filter(Boolean).map((u) => monthOutlook(u!.days, monthDays));
+  return o.length && o.every((x) => x.projected != null) ? o.reduce((a, x) => a + x.projected!, 0) : null;
 }
 
 function EnergyCard({ s }: { s: Settings }) {
@@ -169,7 +175,7 @@ function EnergyCard({ s }: { s: Settings }) {
       {m.days > 0 && (
         <>
           <h3>This month so far</h3>
-          <p><b>{pounds(m.p)}</b> in {m.days} day{m.days === 1 ? '' : 's'} · heading for about <b>{pounds((m.p / m.days) * m.total, 0)}</b> for the month.</p>
+          <p><b>{pounds(m.p)}</b> in {m.days} day{m.days === 1 ? '' : 's'} · heading for about <b>{pounds(m.projected ?? (m.p / m.days) * m.total, 0)}</b> for the month. <a href="#/usage">See the graph ›</a></p>
           {m.prevP > 0 && (Math.abs(diff) < Math.max(50, m.prevP * 0.005) ? <p class="compare">About the same as the same days last month.</p> : <p class={`compare ${diff > 0 ? 'up' : 'down'}`}>{diff > 0 ? '▲' : '▼'} {pounds(Math.abs(diff))} {diff > 0 ? 'more' : 'less'} than the same days last month.</p>)}
         </>
       )}

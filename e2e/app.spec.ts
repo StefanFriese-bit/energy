@@ -140,7 +140,7 @@ test('usage: a gas day is worked out like the bill (m³ → kWh × price + stand
   await connectOctopus(page);
   await open(page, '#/usage');
   await page.getByRole('radio', { name: 'Gas' }).click();
-  await page.getByRole('radio', { name: 'Day' }).click();
+  await page.getByRole('radio', { name: 'Day', exact: true }).click();
   // 48 half hours × 0.1 m³ = 4.8 m³ × 1.02264 × 39.5 ÷ 3.6 = 53.859 kWh; × 6p = 323.15p; + 30p standing = £3.53
   await expect(page.locator('.big-number')).toHaveText('£3.53');
   await page.getByRole('radio', { name: 'kWh' }).click();
@@ -155,12 +155,48 @@ test('usage week view, both fuels, with the day picked by tapping a bar', async 
   await fakeServices(page);
   await connectOctopus(page);
   await open(page, '#/usage');
+  await page.getByRole('radio', { name: 'Week' }).click();
   await expect(page.locator('.legend')).toContainText('Electricity');
   await expect(page.locator('.legend')).toContainText('Gas');
   await page.locator('.chart .bar').first().click();
   await expect(page.locator('.pick-line')).toContainText('£');
   await expect(page.getByText(/is standing charge/)).toBeVisible();
   await expect(page.getByText(/^Readings up to the end of (Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d+ [A-Z][a-z]{2}\./)).toBeVisible();
+});
+
+test('usage month graph: so far, the average day as a dashed line, the rest of the month projected, and the running total', async ({ page }) => {
+  await fakeServices(page);
+  await connectOctopus(page);
+  await open(page, '#/usage');
+  await page.getByRole('radio', { name: 'Gas' }).click();
+  // Month is what the Usage screen opens on.
+  await expect(page.getByRole('radio', { name: 'Month' })).toHaveAttribute('aria-checked', 'true');
+  const yesterday = addDays(ukToday(), -1);
+  const monthDays = new Date(Date.UTC(+yesterday.slice(0, 4), +yesterday.slice(5, 7), 0)).getUTCDate();
+  const done = +yesterday.slice(8);
+  const running = ukToday().slice(0, 7) === yesterday.slice(0, 7);
+  const tiles = page.locator('.tiles');
+  await expect(tiles).toContainText(`${done} of ${monthDays} days`);
+  // A whole gas day here = £3.53 (see the gas test above); every day the same, so the average day is £3.53 too
+  // (unless the month has a clock change in it, when one day is an hour longer or shorter).
+  const clockChange = /-(03|10)$/.test(yesterday.slice(0, 7));
+  if (!clockChange) await expect(tiles.locator('.tile').nth(1)).toContainText('£3.53');
+  await expect(tiles.locator('.tile.proj')).toContainText(running ? 'Projected' : 'total');
+  if (!clockChange && running) await expect(tiles.locator('.tile.proj strong')).toHaveText(`£${Math.round((353.15 * monthDays) / 100)}`);
+  await expect(page.locator('.chart .ref-line')).toHaveCount(1);
+  await expect(page.locator('.chart .ref-label')).toContainText('Average');
+  if (running && done < monthDays) {
+    await expect(page.locator('.chart .bar-projected')).toHaveCount(monthDays - done);
+    await expect(page.locator('.chart .divider')).toContainText('Forecast');
+    await page.locator('.chart .bar').last().click();
+    await expect(page.locator('.pick-line')).toContainText('expected');
+  }
+  await page.getByRole('radio', { name: 'Running total' }).click();
+  await expect(page.locator('.chart .line-path').first()).toBeVisible();
+  await expect(page.locator('.legend')).toContainText('So far');
+  if (running && done < monthDays) await expect(page.locator('.legend')).toContainText('Projected');
+  await page.locator('.chart .bar').first().click();
+  await expect(page.locator('.pick-line')).toContainText('so far this month');
 });
 
 test('heating week: change Saturday, copy it to Sunday, send — Hive gets the whole week with exactly that change', async ({ page }) => {

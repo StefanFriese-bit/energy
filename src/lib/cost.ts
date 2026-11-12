@@ -148,3 +148,22 @@ export function kwhText(k: number): string {
   return `${k.toLocaleString('en-GB', { maximumFractionDigits: k < 10 ? 2 : k < 100 ? 1 : 0 })} kWh`;
 }
 export function pence(p: number): string { return `${p.toLocaleString('en-GB', { maximumFractionDigits: 2 })}p`; }
+
+/** Where a month stands: what it has cost on the days with readings, the average day, and where that average takes the month. */
+export interface MonthOutlook {
+  /** Days of the month that have readings (yesterday's usually arrive in the morning). */
+  daysDone: number; daysInMonth: number;
+  soFar: number; avgPerDay: number | null;
+  /** soFar + the average day × the days still to come (= soFar for a finished month). */
+  projected: number | null;
+}
+/**
+ * `days` = the month's day lines so far (dayTotals); `monthDays` = how many days the month has. A day with no reading yet is counted as still to come,
+ * so the average is never pulled down by a day Octopus has not sent. `value` picks £ (totalP) or kWh.
+ */
+export function monthOutlook(days: DayTotal[], monthDays = days.length, value: (d: DayTotal) => number = (d) => d.totalP): MonthOutlook {
+  const done = days.filter((d) => d.readings > 0);
+  const soFar = done.reduce((a, d) => a + value(d), 0);
+  const avgPerDay = done.length ? soFar / done.length : null;
+  return { daysDone: done.length, daysInMonth: monthDays, soFar, avgPerDay, projected: avgPerDay == null ? null : soFar + avgPerDay * Math.max(0, monthDays - done.length) };
+}

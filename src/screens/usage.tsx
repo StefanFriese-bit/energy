@@ -1,15 +1,20 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
-import { kwhText, pence, pounds, summarise, type DayTotal } from '../lib/cost';
+import { kwhText, monthOutlook, pence, pounds, summarise, type DayTotal } from '../lib/cost';
 import { loadUsage, type Usage } from '../lib/data';
 import type { Kind } from '../lib/octopus';
 import { hasOctopus } from '../lib/store';
 import { addDays, addMonths, clock, dayKey, daysInMonth, mondayOf, monthShort, niceDay, niceMonth, DAY_SHORT, weekdayOf } from '../lib/time';
-import { Bars, Problem, Segment, Spinner, useStore, type Bar } from '../ui';
+import { Chart, Legend, type Series } from '../chart';
+import { Problem, Segment, Spinner, useStore } from '../ui';
 
 type Fuel = Kind | 'both';
 type Period = 'day' | 'week' | 'month' | 'year';
 export const ELEC = 'var(--elec)';
 export const GAS = 'var(--gas)';
+export const PROJ = 'var(--proj)';
+export const AVG = 'var(--avg)';
+const TOTAL = 'var(--accent)';
+const LAST = 'var(--faint)';
 
 function rangeOf(p: Period, anchor: string): [string, string] {
   if (p === 'day') return [anchor, anchor];
@@ -38,10 +43,11 @@ export function UsageScreen() {
   const s = useStore().settings;
   const yesterday = addDays(dayKey(Date.now()), -1);
   const [fuel, setFuel] = useState<Fuel>('both');
-  const [period, setPeriod] = useState<Period>('week');
+  const [period, setPeriod] = useState<Period>('month');
   const [anchor, setAnchor] = useState(yesterday);
   const [unit, setUnit] = useState<'gbp' | 'kwh'>('gbp');
   const [pick, setPick] = useState<number | null>(null);
+  const [view, setView] = useState<'day' | 'running'>('day');
   const [data, setData] = useState<Loaded | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
@@ -78,7 +84,7 @@ export function UsageScreen() {
       </div>
       {err && <Problem retry={() => setTick(tick + 1)}>{err}</Problem>}
       {!err && !data && <Spinner text="Asking Octopus…" />}
-      {data && <UsageBody data={data} kinds={kinds} period={period} range={range} unit={unit} setUnit={setUnit} pick={pick} setPick={setPick} yesterday={yesterday} />}
+      {data && <UsageBody data={data} kinds={kinds} period={period} range={range} unit={unit} setUnit={setUnit} pick={pick} setPick={setPick} yesterday={yesterday} view={view} setView={(v) => { setView(v); setPick(null); }} />}
     </>
   );
 }
@@ -90,9 +96,20 @@ export function readingsUpTo(latestStart: number): string {
   return clock(end) === '00:00' ? `the end of ${niceDay(dayKey(end - 1))}` : `${niceDay(dayKey(end))} ${clock(end)}`;
 }
 
-function UsageBody({ data, kinds, period, range, unit, setUnit, pick, setPick, yesterday }: {
+/** Short money/energy figures for the chart's left axis: £3, £2.50, 40 kWh. */
+function axisText(unit: 'gbp' | 'kwh') {
+  return (v: number) => {
+    if (unit === 'kwh') return v >= 1000 ? `${(v / 1000).toLocaleString('en-GB', { maximumFractionDigits: 1 })}k` : v.toLocaleString('en-GB', { maximumFractionDigits: 1 });
+    const pnd = v / 100;
+    return `£${pnd.toLocaleString('en-GB', { maximumFractionDigits: pnd >= 10 || Number.isInteger(pnd) ? 0 : 2 })}`;
+  };
+}
+
+interface ChartData { labels: string[]; titles: string[]; series: Series[]; dim: boolean[]; divider: { at: number; label: string } | null; refLines: { value: number; colour: string; label: string }[] }
+
+function UsageBody({ data, kinds, period, range, unit, setUnit, pick, setPick, yesterday, view, setView }: {
   data: Loaded; kinds: Kind[]; period: Period; range: [string, string]; unit: 'gbp' | 'kwh'; setUnit: (u: 'gbp' | 'kwh') => void;
-  pick: number | null; setPick: (i: number | null) => void; yesterday: string;
+  pick: number | null; setPick: (i: number | null) => void; yesterday: string; view: 'day' | 'running'; setView: (v: 'day' | 'running') => void;
 }) {
   const present = kinds.filter((k) => data.cur[k]);
   const missing = kinds.filter((k) => !data.cur[k]);
@@ -106,30 +123,93 @@ function UsageBody({ data, kinds, period, range, unit, setUnit, pick, setPick, y
   const both = present.length > 1;
   const v = (d: DayTotal) => (unit === 'gbp' ? d.totalP : d.kwh);
   const fmt = (x: number) => (unit === 'gbp' ? pounds(x) : kwhText(x));
+  const colourOf = (k: Kind) => (k === 'electricity' ? ELEC : GAS);
+  const nameOf = (k: Kind) => (k === 'electricity' ? 'Electricity' : 'Gas');
 
-  const bars: Bar[] = useMemo(() => {
+  // The month: where it stands, the average day and where that takes it (per fuel, then added up).
+  const isMonth = period === 'month';
+  const monthDays = isMonth && present.length ? days(present[0]).length : 0;
+  const outlooks = isMonth ? present.map((k) => monthOutlook(days(k), monthDays, v)) : [];
+  const running = isMonth && range[1] > yesterday;
+  const avgDay = outlooks.length && outlooks.every((o) => o.avgPerDay != null) ? outlooks.reduce((a, o) => a + o.avgPerDay!, 0) : null;
+  const projected = outlooks.length && outlooks.every((o) => o.projected != null) ? outlooks.reduce((a, o) => a + o.projected!, 0) : null;
+  const lastMonthTotal = isMonth ? present.reduce((a, k) => a + days(k, 'prev').reduce((b, d) => b + v(d), 0), 0) : 0;
+  const lastMonthHasData = isMonth && present.some((k) => days(k, 'prev').some((d) => d.readings > 0));
+
+  const chart: ChartData = useMemo(() => {
+    const none = { divider: null, refLines: [] as ChartData['refLines'] };
     if (period === 'day') {
-      const out: Bar[] = [];
       const series = present.map((k) => data.cur[k]!.costed);
       const starts = [...new Set(series.flat().map((c) => c.start))].sort((a, b) => a - b);
-      for (const t of starts) {
-        const vals = series.map((list) => { const c = list.find((x) => x.start === t); return c ? (unit === 'gbp' ? c.p : c.kwh) : 0; });
-        const m = clock(t);
-        out.push({ label: m.endsWith(':00') && +m.slice(0, 2) % 6 === 0 ? m.slice(0, 2) : '', values: vals, title: `${m}: ${vals.map(fmt).join(' + ')}` });
-      }
-      return out;
+      const cols = starts.map((t) => series.map((list) => { const c = list.find((x) => x.start === t); return c ? (unit === 'gbp' ? c.p : c.kwh) : 0; }));
+      return {
+        ...none,
+        labels: starts.map((t) => { const m = clock(t); return m.endsWith(':00') && +m.slice(0, 2) % 6 === 0 ? m.slice(0, 2) : ''; }),
+        titles: starts.map((t, i) => `${clock(t)}: ${cols[i].map(fmt).join(' + ')}`),
+        series: present.map((k, j) => ({ kind: 'bar' as const, name: nameOf(k), colour: colourOf(k), values: cols.map((c) => c[j]) })),
+        dim: starts.map(() => false),
+      };
     }
     if (period === 'year') {
       const months = new Map<string, number[]>();
       present.forEach((k, i) => { for (const d of days(k)) { const m = d.day.slice(0, 7); const a = months.get(m) ?? present.map(() => 0); a[i] += v(d); months.set(m, a); } });
-      return [...months.entries()].map(([m, vals]) => ({ label: monthShort(m).slice(0, 1), values: vals, title: `${niceMonth(m)}: ${fmt(vals.reduce((a, b) => a + b, 0))}`, dim: m > yesterday.slice(0, 7) }));
+      const list = [...months.entries()];
+      return {
+        ...none,
+        labels: list.map(([m]) => monthShort(m).slice(0, 1)),
+        titles: list.map(([m, vals]) => `${niceMonth(m)}: ${fmt(vals.reduce((a, b) => a + b, 0))}`),
+        series: present.map((k, j) => ({ kind: 'bar' as const, name: nameOf(k), colour: colourOf(k), values: list.map(([, vals]) => vals[j]) })),
+        dim: list.map(([m]) => m > yesterday.slice(0, 7)),
+      };
     }
     const first = days(present[0]);
-    return first.map((d, i) => {
-      const vals = present.map((k) => v(days(k)[i]));
-      return { label: period === 'week' ? DAY_SHORT[weekdayOf(d.day)].slice(0, 2) : +d.day.slice(8) % 5 === 1 ? String(+d.day.slice(8)) : '', values: vals, title: `${niceDay(d.day)}: ${fmt(vals.reduce((a, b) => a + b, 0))}`, dim: d.day > yesterday || d.readings === 0 };
-    });
-  }, [data, period, unit, present.join()]);
+    const labels = first.map((d) => (period === 'week' ? DAY_SHORT[weekdayOf(d.day)].slice(0, 2) : +d.day.slice(8) === 1 || +d.day.slice(8) % 5 === 0 ? String(+d.day.slice(8)) : ''));
+    const has = first.map((_, i) => present.some((k) => days(k)[i].readings > 0));
+    const actual = (i: number) => present.reduce((a, k) => a + v(days(k)[i]), 0);
+    // In a month still running, the days at the end with no readings yet (today, the rest of the month, and yesterday
+    // until Octopus sends it) are the ones still to come: drawn as projected, like the dashboard's forecast months.
+    let futureFrom = first.length;
+    if (running) while (futureFrom > 0 && !has[futureFrom - 1]) futureFrom--;
+    const avgText = avgDay != null ? `Average ${unit === 'gbp' ? pounds(avgDay) : kwhText(avgDay)} a day` : '';
+
+    if (isMonth && view === 'running') {
+      let acc = 0;
+      const cum = first.map((_, i) => (i < futureFrom ? (acc += actual(i)) : null));
+      const lastActual = futureFrom - 1;
+      const proj = first.map((_, i) => (running && avgDay != null && i >= Math.max(0, lastActual) ? (lastActual >= 0 ? cum[lastActual]! : 0) + avgDay * (i - lastActual) : null));
+      const prevDays = days(present[0], 'prev');
+      let pacc = 0;
+      const lastMonth = lastMonthHasData ? first.map((_, i) => (i < prevDays.length ? (pacc += present.reduce((a, k) => { const d = days(k, 'prev')[i]; return a + (d ? v(d) : 0); }, 0)) : null)) : null;
+      const series: Series[] = [];
+      if (lastMonth) series.push({ kind: 'line', name: 'Last month', colour: LAST, values: lastMonth, dots: false, width: 1.5, faint: true });
+      if (proj.some((x) => x != null)) series.push({ kind: 'line', name: 'Projected', colour: PROJ, values: proj, dashed: true, dots: false, width: 2 });
+      series.push({ kind: 'line', name: 'So far', colour: both ? TOTAL : colourOf(present[0]), values: cum });
+      return {
+        labels, series, dim: first.map(() => false), refLines: [],
+        divider: running && futureFrom < first.length ? { at: futureFrom, label: 'Forecast →' } : null,
+        titles: first.map((d, i) => cum[i] != null
+          ? `${niceDay(d.day)}: ${fmt(cum[i]!)} so far this month${lastMonth?.[i] != null ? ` (last month by the same day: ${fmt(lastMonth[i]!)})` : ''}`
+          : `${niceDay(d.day)}: about ${fmt(proj[i] ?? 0)} by then, if the rest of the month goes like the average day`),
+      };
+    }
+
+    const series: Series[] = present.map((k) => ({ kind: 'bar', name: nameOf(k), colour: colourOf(k), values: first.map((_, i) => (i < futureFrom ? v(days(k)[i]) : null)) }));
+    if (isMonth && running && avgDay != null && futureFrom < first.length) {
+      series.push({ kind: 'bar', name: 'Projected', colour: PROJ, projected: true, values: first.map((_, i) => (i >= futureFrom ? avgDay : null)) });
+    }
+    return {
+      labels, series,
+      dim: first.map((d, i) => i < futureFrom && (d.day > yesterday || !has[i])),
+      divider: isMonth && running && futureFrom > 0 && futureFrom < first.length ? { at: futureFrom, label: 'Forecast →' } : null,
+      refLines: isMonth && avgDay != null && avgDay > 0 ? [{ value: avgDay, colour: AVG, label: avgText }] : [],
+      titles: first.map((d, i) => {
+        if (i >= futureFrom) return `${niceDay(d.day)}: about ${fmt(avgDay ?? 0)} expected (the average day so far)`;
+        const vals = present.map((k) => v(days(k)[i]));
+        const total = vals.reduce((a, b) => a + b, 0);
+        return `${niceDay(d.day)}: ${fmt(total)}${both ? ` (electricity ${fmt(vals[0])}, gas ${fmt(vals[1])})` : ''}${isMonth && avgDay ? ` · ${total >= avgDay ? 'above' : 'below'} the average day` : ''}`;
+      }),
+    };
+  }, [data, period, unit, view, present.join(), avgDay, running]);
 
   if (!present.length) return <Problem>Octopus does not list a {kinds.join(' or ')} meter on this account.</Problem>;
 
@@ -139,12 +219,22 @@ function UsageBody({ data, kinds, period, range, unit, setUnit, pick, setPick, y
   const latest = Math.max(...present.map((k) => data.cur[k]!.latest ?? 0));
   const partial = present.flatMap((k) => days(k).filter((d) => d.day <= yesterday && d.readings > 0 && d.readings < d.slots).map((d) => d.day));
   const unpriced = cur.reduce((a, x) => a + x.unpriced, 0);
-  const picked = pick != null ? bars[pick] : null;
-  const thisMonthRunning = period === 'month' && range[1] > yesterday && doneDays > 0;
-  const totalDays = period === 'month' ? days(present[0]).length : 0;
+  const picked = pick != null ? chart.titles[pick] : null;
   const priciest = period === 'week' || period === 'month'
     ? days(present[0]).map((d, i) => ({ d: d.day, p: present.reduce((a, k) => a + days(k)[i].totalP, 0) })).filter((x) => x.p > 0).sort((a, b) => b.p - a.p)[0]
     : null;
+  const monthName = niceMonth(range[0].slice(0, 7)).split(' ')[0];
+
+  const legend: { label: string; colour: string; style: 'bar' | 'line' | 'dashed' | 'projected' }[] = [];
+  if (isMonth && view === 'running') {
+    legend.push({ label: 'So far', colour: both ? TOTAL : colourOf(present[0]), style: 'line' });
+    if (running && projected != null) legend.push({ label: 'Projected', colour: PROJ, style: 'dashed' });
+    if (lastMonthHasData) legend.push({ label: 'Last month', colour: LAST, style: 'line' });
+  } else {
+    present.forEach((k, i) => legend.push({ label: `${nameOf(k)} ${unit === 'gbp' ? pounds(cur[i].totalP) : kwhText(cur[i].kwh)}`, colour: colourOf(k), style: 'bar' }));
+    if (isMonth && avgDay != null) legend.push({ label: 'Average day', colour: AVG, style: 'dashed' });
+    if (isMonth && running && projected != null && chart.series.some((x) => x.kind === 'bar' && x.projected)) legend.push({ label: 'Projected', colour: PROJ, style: 'projected' });
+  }
 
   return (
     <>
@@ -152,12 +242,6 @@ function UsageBody({ data, kinds, period, range, unit, setUnit, pick, setPick, y
         <div class="big-number">{fmt(totalNow)}</div>
         <Segment label="Show" value={unit} onChange={setUnit} options={[['gbp', '£'], ['kwh', 'kWh']] as const} />
       </div>
-      {both && (
-        <div class="legend">
-          <span><i style={{ background: ELEC }} />Electricity {unit === 'gbp' ? pounds(cur[0].totalP) : kwhText(cur[0].kwh)}</span>
-          <span><i style={{ background: GAS }} />Gas {unit === 'gbp' ? pounds(cur[1].totalP) : kwhText(cur[1].kwh)}</span>
-        </div>
-      )}
       {totalPrev > 0 && doneDays > 0 && (
         Math.abs(diff) < Math.max(0.5, totalPrev * 0.005) ? (
           <p class="compare">About the same as {period === 'year' ? 'the 12 months before' : `the ${period} before`}{period !== 'year' && doneDays < days(present[0]).length ? ` (first ${doneDays} day${doneDays === 1 ? '' : 's'} of each)` : ''}.</p>
@@ -169,15 +253,31 @@ function UsageBody({ data, kinds, period, range, unit, setUnit, pick, setPick, y
         )
       )}
 
-      <Bars bars={bars} colours={present.map((k) => (k === 'electricity' ? ELEC : GAS))} selected={pick} onPick={setPick} />
-      <p class="pick-line" aria-live="polite">{picked ? picked.title : 'Tap a bar for its figure.'}</p>
+      {isMonth && outlooks.length > 0 && (
+        <div class="tiles" aria-label="This month">
+          <div class="tile"><span class="meta">So far</span><strong>{fmt(outlooks.reduce((a, o) => a + o.soFar, 0))}</strong><span class="meta">{doneDays} of {monthDays} days</span></div>
+          <div class="tile"><span class="meta">Average day</span><strong>{avgDay != null ? fmt(avgDay) : '–'}</strong><span class="meta">{both && avgDay != null ? <>elec {fmt(outlooks[0].avgPerDay ?? 0)}<br />gas {fmt(outlooks[1].avgPerDay ?? 0)}</> : 'per day'}</span></div>
+          <div class="tile proj"><span class="meta">{running ? 'Projected' : 'Month total'}</span><strong>{projected == null ? '–' : unit === 'gbp' ? pounds(projected, running ? 0 : 2) : kwhText(projected)}</strong>
+            <span class="meta">{lastMonthHasData ? <>last month<br />{fmt(lastMonthTotal)}</> : running ? 'at the average day' : ''}</span></div>
+        </div>
+      )}
+
+      {isMonth && <Segment label="Graph" value={view} onChange={setView} options={[['day', 'Per day'], ['running', 'Running total']] as const} />}
+
+      <section class="card chart-card">
+      <Chart labels={chart.labels} titles={chart.titles} series={chart.series} selected={pick} onPick={setPick} dim={chart.dim}
+        divider={chart.divider} refLines={chart.refLines} yFormat={axisText(unit)} height={isMonth ? 220 : 190}
+        ariaLabel={isMonth ? `${monthName}, ${view === 'running' ? 'running total' : 'day by day'}` : 'Use and cost'} />
+      <Legend items={legend} />
+      <p class="pick-line" aria-live="polite">{picked ?? (isMonth ? 'Tap a day for its figure.' : 'Tap a bar for its figure.')}</p>
+      </section>
 
       <div class="facts">
         {unit === 'gbp' && <p>Of that, <b>{pounds(tot(cur, 'standingP'))}</b> is standing charge (paid whatever you use) and <b>{pounds(tot(cur, 'energyP'))}</b> is the energy itself.</p>}
         {present.map((k, i) => cur[i].avgRate != null && (
-          <p>{k === 'electricity' ? 'Electricity' : 'Gas'}: {kwhText(cur[i].kwh)} at an average <b>{pence(cur[i].avgRate!)}</b> per kWh{prev[i].avgRate != null ? ` (before: ${pence(prev[i].avgRate!)})` : ''}.</p>
+          <p>{nameOf(k)}: {kwhText(cur[i].kwh)} at an average <b>{pence(cur[i].avgRate!)}</b> per kWh{prev[i].avgRate != null ? ` (before: ${pence(prev[i].avgRate!)})` : ''}.</p>
         ))}
-        {thisMonthRunning && unit === 'gbp' && <p>So far {pounds(totalNow)} in {doneDays} days. At this rate the month comes to about <b>{pounds((totalNow / doneDays) * totalDays, 0)}</b>.</p>}
+        {isMonth && running && projected != null && <p>So far {fmt(outlooks.reduce((a, o) => a + o.soFar, 0))} in {doneDays} day{doneDays === 1 ? '' : 's'}. If the other {monthDays - doneDays} days cost the same as the average day, {monthName} comes to about <b>{fmt(projected)}</b>.</p>}
         {priciest && unit === 'gbp' && <p>Dearest day: <b>{niceDay(priciest.d)}</b>, {pounds(priciest.p)}.</p>}
       </div>
 
