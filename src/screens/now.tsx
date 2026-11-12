@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'preact/hooks';
 import { kwhText, pence, pounds, summarise } from '../lib/cost';
 import { getAccount, importMeter, loadUsage } from '../lib/data';
-import { boost, HiveError, isSignedIn, setMode, setTarget, stopBoost, type Heating } from '../lib/hive';
-import { applyHeating, reloadHeating, useHeating } from '../lib/heating-state';
+import { boost, boostWater, HiveError, isSignedIn, setMode, setTarget, stopBoost, type Heating, type HotWater } from '../lib/hive';
+import { applyHeating, applyWater, reloadHeating, useHeating } from '../lib/heating-state';
 import { nextChange, STEP, tempText } from '../lib/schedule';
 import { hasOctopus, type Settings } from '../lib/store';
 import { addDays, addMonths, DAY_LONG, dayKey, daysInMonth, hhmm, minuteOfDay, niceDay, weekdayOf } from '../lib/time';
 import { Problem, Segment, Spinner, Stepper, useStore } from '../ui';
 import { tariffNow, type TariffNow } from './prices';
+import { waterIsOn } from '../lib/water';
 import { DayBar } from './schedule';
+import { modeWord, nextText } from './water';
 
 export function NowScreen() {
   const s = useStore().settings;
@@ -16,6 +18,7 @@ export function NowScreen() {
     <>
       <h1>Home energy</h1>
       {isSignedIn() ? <HeatingCard /> : <div class="empty"><p>Sign in to Hive (Settings) to control the heating from here.</p><a class="btn" href="#/settings">Settings</a></div>}
+      {isSignedIn() && <WaterCard />}
       {hasOctopus(s) ? <EnergyCard s={s} /> : <div class="empty"><p>Add your Octopus details (Settings) to see use, prices and cost.</p><a class="btn" href="#/settings">Settings</a></div>}
     </>
   );
@@ -81,6 +84,32 @@ function HeatingCard() {
         </>
       )}
       {busy && !['stop', 'set', 'boost'].includes(busy) && <Spinner text="Telling Hive…" />}
+      {err && <Problem>{err}</Problem>}
+    </section>
+  );
+}
+
+/** Hot water at a glance; shown only when Hive lists hot water for the house. Everything else is on the Water screen. */
+function WaterCard() {
+  const w: HotWater | null = useHeating().water[0] ?? null;
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  if (!w) return null;
+  const today = weekdayOf(dayKey(Date.now()));
+  const minute = minuteOfDay(Date.now());
+  const on = waterIsOn(w, today, minute);
+  const hour = async () => {
+    setBusy(true); setErr(null);
+    try { applyWater(await boostWater(w, 60)); } catch (e) { setErr(e instanceof HiveError ? e.message : String(e)); } finally { setBusy(false); }
+  };
+  return (
+    <section class="card water-card">
+      <div class="card-top"><b>Hot water</b><a class="small" href="#/water">More ›</a></div>
+      <p>
+        <b>{on == null ? '–' : on ? 'On now' : 'Off now'}</b> · {w.mode === 'BOOST' ? `boosting${w.boostMinutes != null ? `, ${w.boostMinutes} min left` : ''}` : modeWord(w.mode).toLowerCase()}
+        {nextText(w, today, minute) ? <span class="small"> · {nextText(w, today, minute)}</span> : null}
+      </p>
+      {w.mode !== 'BOOST' && w.canBoost && <button type="button" class="btn small" disabled={busy} onClick={hour}>{busy ? 'Telling Hive…' : 'Heat water for an hour'}</button>}
       {err && <Problem>{err}</Problem>}
     </section>
   );

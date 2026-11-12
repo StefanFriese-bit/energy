@@ -6,6 +6,7 @@
 import { AuthenticationDetails, CognitoUser, CognitoUserPool, type CognitoUserSession } from 'amazon-cognito-identity-js';
 import { fromHive, toHive, sameDay, type Week } from './schedule';
 import { DAYS } from './time';
+import { WATER_MAX_SLOTS, waterFromHive, waterToHive } from './water';
 
 export const BEEKEEPER = 'https://beekeeper.hivehome.com/1.0';
 const SSO = 'https://sso.hivehome.com/';
@@ -173,8 +174,53 @@ export function parseHeating(j: any): Heating[] {
     });
 }
 
+/** Hot water as Hive lists it: on/off by a week of times, always on, off, or boosted for a while. Hive holds no water temperature. */
+export type WaterMode = 'SCHEDULE' | 'MANUAL' | 'OFF' | 'BOOST';
+export interface HotWater {
+  id: string; type: 'hotwater'; name: string;
+  /** MANUAL is Hive's word for "always on". */
+  mode: WaterMode;
+  /** Hive's own on/off word; in Schedule mode the week decides instead (see waterIsOn). */
+  status: boolean | null;
+  boostMinutes: number | null;
+  previousMode: WaterMode | null;
+  online: boolean | null;
+  canBoost: boolean;
+  /** The most lines Hive takes for one day. */
+  maxSlots: number;
+  schedule: Week | null;
+  raw: any;
+}
+
+export function parseHotWater(j: any): HotWater[] {
+  return listOf(j, 'products')
+    .filter((p) => p?.type === 'hotwater')
+    .map((p) => {
+      const st = p.state ?? {}, pr = p.props ?? {};
+      const caps: unknown = pr.capabilities;
+      return {
+        id: p.id, type: 'hotwater' as const, name: st.name ?? pr.name ?? 'Hot water',
+        mode: (st.mode ?? 'SCHEDULE') as WaterMode,
+        status: st.status === 'ON' ? true : st.status === 'OFF' ? false : null,
+        boostMinutes: st.mode === 'BOOST' ? n(st.boost) : null,
+        previousMode: (pr.previous?.mode ?? null) as WaterMode | null,
+        online: typeof pr.online === 'boolean' ? pr.online : null,
+        canBoost: Array.isArray(caps) ? caps.includes('BOOST') : true,
+        maxSlots: n(pr.maxEvents) ?? WATER_MAX_SLOTS,
+        schedule: waterFromHive(st.schedule),
+        raw: p,
+      };
+    });
+}
+
+export interface Home { heating: Heating[]; water: HotWater[] }
+/** Everything Hive lists for the house that this app shows, in one request. */
+export async function getHome(): Promise<Home> {
+  const j = await bee('/nodes/all?products=true&devices=true&actions=true');
+  return { heating: parseHeating(j), water: parseHotWater(j) };
+}
 export async function getHeating(): Promise<Heating[]> {
-  return parseHeating(await bee('/nodes/all?products=true&devices=true&actions=true'));
+  return (await getHome()).heating;
 }
 
 async function change(h: Heating, body: Record<string, unknown>): Promise<Heating> {
@@ -203,7 +249,30 @@ export async function sendSchedule(h: Heating, week: Week): Promise<Heating> {
   return after;
 }
 
-/** What Hive sent about the thermostat, for fixing this app if Hive changes something. No sign-in pass inside. */
-export function snapshot(list: Heating[]): string {
-  return JSON.stringify(list.map((h) => h.raw), null, 2);
+async function changeWater(w: HotWater, body: Record<string, unknown>): Promise<HotWater> {
+  await bee(`/nodes/hotwater/${w.id}`, { method: 'POST', body });
+  const after = (await getHome()).water.find((x) => x.id === w.id);
+  if (!after) throw new HiveError('notfound', 'Hive no longer lists the hot water.');
+  return after;
+}
+
+export const setWaterMode = (w: HotWater, mode: 'SCHEDULE' | 'MANUAL' | 'OFF') => changeWater(w, { mode });
+export const boostWater = (w: HotWater, minutes: number) => changeWater(w, { mode: 'BOOST', boost: minutes });
+export function stopWaterBoost(w: HotWater) {
+  return changeWater(w, { mode: w.previousMode && w.previousMode !== 'BOOST' ? w.previousMode : 'SCHEDULE' });
+}
+
+/** Sends the whole hot water week and reads it back: only "saved" when Hive shows exactly what was sent. */
+export async function sendWaterSchedule(w: HotWater, week: Week): Promise<HotWater> {
+  if (!w.schedule) throw new HiveError('format', 'Hive sent a hot water schedule this app does not understand, so it will not overwrite it.');
+  const after = await changeWater(w, { schedule: waterToHive(week) });
+  if (!after.schedule || DAYS.some((d) => !sameDay(after.schedule![d], week[d]))) {
+    throw new HiveError('hive', 'Hive took the change but shows a different hot water schedule. Reload and check before trying again.');
+  }
+  return after;
+}
+
+/** What Hive sent about the thermostat and the hot water, for fixing this app if Hive changes something. No sign-in pass inside. */
+export function snapshot(list: Heating[], water: HotWater[] = []): string {
+  return JSON.stringify([...list, ...water].map((h) => h.raw), null, 2);
 }

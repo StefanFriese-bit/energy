@@ -94,6 +94,17 @@ summary { cursor: pointer; padding: 6px 0; }
 .daybar { position: relative; height: 30px; border-radius: 8px; overflow: hidden; background: var(--line); flex: 1; }
 .daybar .blk { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; justify-content: center; color: #fff; font-size: .78rem; font-weight: 700; text-shadow: 0 1px 2px rgba(0,0,0,.35); border-right: 1px solid rgba(255,255,255,.55); }
 .daybar .blk.carried { opacity: .7; }
+.daybar .blk.water { background: #d4582c; border-right: 0; }
+.barcol { flex: 1; min-width: 0; display: block; }
+.barcol .daybar { display: block; }
+.barcol .meta { margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dayrow.tall { align-items: flex-start; }
+.dayrow.tall .dname { line-height: 30px; }
+.slots .segment { flex: 1; margin: 0; }
+.huge.hot { color: var(--gas); }
+.huge.word { font-size: 1.55rem; line-height: 1.85; white-space: nowrap; }
+.info-box { background: var(--soft); color: var(--ink); border-radius: 12px; padding: 10px 14px; margin: 10px 0; font-size: .95rem; }
+.empty.left { text-align: left; }
 .daybar .now { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--ink); }
 .ticks { display: flex; justify-content: space-between; font-size: .72rem; color: var(--muted); margin: 2px 0 2px 46px; }
 .day-edit .ticks { margin-left: 0; }

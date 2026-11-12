@@ -10,11 +10,12 @@ export function useStore(): State {
 }
 
 // ---- routing (hash) -------------------------------------------------------------------------------------------------
-export type Route = { name: 'now' | 'schedule' | 'usage' | 'prices' | 'settings' } | { name: 'day'; day: Day };
+export type Route = { name: 'now' | 'schedule' | 'water' | 'usage' | 'prices' | 'settings' } | { name: 'day' | 'waterday'; day: Day };
 export function parseRoute(hash: string): Route {
   const [, a, b] = hash.replace(/^#/, '').split('/');
   if (a === 'day' && (DAYS as readonly string[]).includes(b)) return { name: 'day', day: b as Day };
-  if (a === 'schedule' || a === 'usage' || a === 'prices' || a === 'settings') return { name: a };
+  if (a === 'water' && (DAYS as readonly string[]).includes(b)) return { name: 'waterday', day: b as Day };
+  if (a === 'schedule' || a === 'water' || a === 'usage' || a === 'prices' || a === 'settings') return { name: a };
   return { name: 'now' };
 }
 let current = parseRoute(location.hash);

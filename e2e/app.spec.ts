@@ -21,12 +21,18 @@ const week = (t: number[]) => Object.fromEntries(['monday', 'tuesday', 'wednesda
   { start: 390, value: { target: t[0] } }, { start: 510, value: { target: 16 } }, { start: 1020, value: { target: 20 } }, { start: 1350, value: { target: 15 } },
 ]]));
 
-interface Fake { heating: any; posts: any[]; octopusCalls: string[] }
+// Hot water as Hive keeps it: on 06:30–07:30 and 17:00–18:00 every day.
+const waterWeek = () => Object.fromEntries(['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'].map((d) => [d, [
+  { start: 390, value: { status: 'ON' } }, { start: 450, value: { status: 'OFF' } }, { start: 1020, value: { status: 'ON' } }, { start: 1080, value: { status: 'OFF' } },
+]]));
 
-async function fakeServices(page: Page, opts: { hive?: boolean } = {}): Promise<Fake> {
+interface Fake { heating: any; water: any; posts: any[]; waterPosts: any[]; octopusCalls: string[] }
+
+async function fakeServices(page: Page, opts: { hive?: boolean; water?: boolean } = {}): Promise<Fake> {
   const f: Fake = {
     heating: { id: 'h1', type: 'heating', parent: 'd1', state: { name: 'Heating', mode: 'SCHEDULE', target: 20, schedule: week([20]) }, props: { temperature: 19.43, working: true, zone: 'z1', previous: { mode: 'SCHEDULE' } } },
-    posts: [], octopusCalls: [],
+    water: { id: 'hw', type: 'hotwater', parent: 'bm1', state: { name: 'Hot water', mode: 'SCHEDULE', status: 'OFF', boost: null, schedule: waterWeek() }, props: { online: true, maxEvents: 6, capabilities: ['BOOST', 'HOLIDAY_MODE'], previous: { mode: 'OFF' } } },
+    posts: [], waterPosts: [], octopusCalls: [],
   };
   // Anything else on the internet = a request this app should not make. (Registered first: Playwright asks the newest route first.)
   await page.route(/^https?:\/\/(?!localhost)/, (route) => route.abort());
@@ -78,6 +84,15 @@ async function fakeServices(page: Page, opts: { hive?: boolean } = {}): Promise<
     const json = (body: unknown) => route.fulfill({ status: 200, headers: { ...cors, 'content-type': 'application/json' }, body: JSON.stringify(body) });
     if (req.method() === 'POST') {
       const body = req.postDataJSON();
+      const path = new URL(req.url()).pathname;
+      if (path === '/1.0/nodes/hotwater/hw') {
+        f.waterPosts.push(body);
+        const ws = f.water.state;
+        if (body.schedule) ws.schedule = body.schedule;
+        if (body.mode) { if (body.mode === 'BOOST') f.water.props.previous = { mode: ws.mode }; ws.mode = body.mode; ws.boost = body.mode === 'BOOST' ? body.boost : null; }
+        return json({});
+      }
+      if (path !== '/1.0/nodes/heating/h1') return route.fulfill({ status: 404, headers: cors, body: '{}' });
       f.posts.push(body);
       const st = f.heating.state;
       if (body.schedule) st.schedule = body.schedule;
@@ -86,7 +101,7 @@ async function fakeServices(page: Page, opts: { hive?: boolean } = {}): Promise<
       if (body.boost != null) st.boost = body.boost;
       return json({});
     }
-    return json({ products: [f.heating, { id: 'hw', type: 'hotwater', state: { mode: 'OFF' }, props: {} }], devices: [{ id: 'd1', type: 'thermostatui', props: { online: true, zone: 'z1' } }] });
+    return json({ products: opts.water === false ? [f.heating] : [f.heating, f.water], devices: [{ id: 'd1', type: 'thermostatui', props: { online: true, zone: 'z1' } }] });
   });
   await page.addInitScript(({ hive }) => {
     if (hive && !sessionStorage.getItem('seeded')) { localStorage.setItem('energy-hive-test-token', 'test-token'); sessionStorage.setItem('seeded', '1'); }
@@ -235,6 +250,107 @@ test('now: switch to Manual at a chosen temperature', async ({ page }) => {
   expect(f.posts[1]).toEqual({ target: 20.5 });
 });
 
+test('hot water: the week as Hive has it, always on, back to schedule, boost and stop — each sends exactly that', async ({ page }) => {
+  const f = await fakeServices(page);
+  await open(page, '#/water');
+  await expect(page.getByRole('heading', { name: 'Hot water', exact: true })).toBeVisible();
+  await expect(page.locator('.dayrow')).toHaveCount(7);
+  await expect(page.locator('.dayrow').first()).toContainText('06:30–07:30, 17:00–18:00 · 2 h');
+  await expect(page.getByText('On for 14 h a week in all.')).toBeVisible();
+  await expect(page.getByText('How hot the water gets is not set here.')).toBeVisible();
+  expect(f.waterPosts).toEqual([]);
+
+  await page.getByRole('radio', { name: 'Always on' }).click();
+  await expect(page.getByText('On all the time until you change it.')).toBeVisible();
+  await expect(page.locator('.huge').first()).toHaveText('On');
+  await expect(page.getByText(/so it is not following this week/)).toBeVisible();
+  expect(f.waterPosts).toEqual([{ mode: 'MANUAL' }]);
+
+  await page.getByRole('radio', { name: 'Off', exact: true }).click();
+  await expect(page.getByText('Off until you change it.')).toBeVisible();
+  await expect(page.locator('.huge').first()).toHaveText('Off');
+  expect(f.waterPosts[1]).toEqual({ mode: 'OFF' });
+
+  await page.getByRole('radio', { name: 'Schedule' }).click();
+  await expect(page.getByText(/^Goes (on|off) at \d\d:\d\d/)).toBeVisible();
+  expect(f.waterPosts[2]).toEqual({ mode: 'SCHEDULE' });
+
+  await page.getByRole('button', { name: '30 min' }).click();
+  await page.getByRole('button', { name: 'Boost', exact: true }).click();
+  await expect(page.getByText('Boosting: 30 min left')).toBeVisible();
+  await expect(page.locator('.huge').first()).toHaveText('On');
+  expect(f.waterPosts[3]).toEqual({ mode: 'BOOST', boost: 30 });
+  await page.getByRole('button', { name: 'Stop boost' }).click();
+  await expect(page.getByText(/Boosting/)).toHaveCount(0);
+  expect(f.waterPosts[4]).toEqual({ mode: 'SCHEDULE' });
+  expect(f.posts).toEqual([]); // the heating was never touched
+});
+
+test('hot water week: change Saturday, copy to Sunday, send — Hive gets the whole week with exactly that change', async ({ page }) => {
+  const f = await fakeServices(page);
+  await open(page, '#/water');
+  await page.locator('a.dayrow[href="#/water/saturday"]').click();
+  await expect(page.getByRole('heading', { name: 'Saturday hot water' })).toBeVisible();
+  // The lines stay in time order, so move the "off" later first, then the "on".
+  await page.locator('.slots li').nth(1).locator('input[type=time]').fill('09:30');
+  await page.locator('.slots li').first().locator('input[type=time]').fill('08:00');
+  await expect(page.getByText('08:00–09:30, 17:00–18:00')).toBeVisible();
+  await page.locator('.slots li').nth(2).getByRole('radio', { name: 'Off' }).click(); // the evening goes
+  await expect(page.getByText('08:00–09:30.')).toBeVisible();
+  await page.getByRole('button', { name: 'Weekend' }).click();
+  await expect(page.getByText('Copied to Sun.')).toBeVisible();
+  await page.getByRole('button', { name: 'Done — back to hot water' }).click();
+  await expect(page.locator('.sendbar')).toContainText('Sat, Sun changed');
+  expect(f.waterPosts).toEqual([]); // nothing sent yet
+  await page.reload(); // an unfinished edit survives closing the app
+  await expect(page.locator('.sendbar')).toContainText('Sat, Sun changed');
+  await page.getByRole('button', { name: 'Send to Hive' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Send' }).click();
+  await expect(page.getByText('Saved on Hive.')).toBeVisible();
+  expect(f.waterPosts).toHaveLength(1);
+  expect(Object.keys(f.waterPosts[0])).toEqual(['schedule']);
+  const sent = f.waterPosts[0].schedule;
+  const want = [{ start: 480, value: { status: 'ON' } }, { start: 570, value: { status: 'OFF' } }, { start: 1020, value: { status: 'OFF' } }, { start: 1080, value: { status: 'OFF' } }];
+  expect(sent.saturday).toEqual(want);
+  expect(sent.sunday).toEqual(want);
+  expect(sent.friday).toEqual(waterWeek().friday);
+  await expect(page.locator('.sendbar')).toHaveCount(0);
+  expect(f.posts).toEqual([]);
+});
+
+test('hot water week: two lines at the same time cannot be sent, and Undo puts the week back', async ({ page }) => {
+  const f = await fakeServices(page);
+  await open(page, '#/water/tuesday');
+  await page.locator('.slots li').nth(1).locator('input[type=time]').fill('06:30');
+  await expect(page.getByText('Two lines are at the same time.')).toBeVisible();
+  await open(page, '#/water');
+  await expect(page.getByRole('button', { name: 'Send to Hive' })).toBeDisabled();
+  await page.getByRole('button', { name: 'Undo' }).click();
+  await expect(page.locator('.sendbar')).toHaveCount(0);
+  expect(f.waterPosts).toEqual([]);
+});
+
+test('hot water on the Now screen: heat water for an hour sends exactly that', async ({ page }) => {
+  const f = await fakeServices(page);
+  await open(page, '#/now');
+  await expect(page.locator('.water-card')).toContainText(/(On|Off) now · schedule/);
+  await page.getByRole('button', { name: 'Heat water for an hour' }).click();
+  await expect(page.locator('.water-card')).toContainText('On now · boosting, 60 min left');
+  expect(f.waterPosts).toEqual([{ mode: 'BOOST', boost: 60 }]);
+  expect(f.posts).toEqual([]);
+});
+
+test('a house where Hive lists no hot water (combi boiler): said plainly, nothing to press, nothing sent', async ({ page }) => {
+  const f = await fakeServices(page, { water: false });
+  await open(page, '#/water');
+  await expect(page.getByText('Hive does not list hot water for this house.')).toBeVisible();
+  await expect(page.locator('.dayrow')).toHaveCount(0);
+  await open(page, '#/now');
+  await expect(page.getByText('Boiler heating now')).toBeVisible();
+  await expect(page.locator('.water-card')).toHaveCount(0);
+  expect(f.waterPosts).toEqual([]);
+});
+
 test('prices: Agile shows today\'s half-hour prices and the cheapest 3 hours; gas its flat price', async ({ page }) => {
   await fakeServices(page);
   await connectOctopus(page);
@@ -252,6 +368,8 @@ test('not signed in to Hive: the sign-in form, and no Hive request is made', asy
   await fakeServices(page, { hive: false });
   await open(page, '#/schedule');
   await expect(page.getByText('Sign in to Hive to see and change the heating schedule.')).toBeVisible();
+  await open(page, '#/water');
+  await expect(page.getByText('Sign in to Hive to see and change the hot water.')).toBeVisible();
   await open(page, '#/settings');
   await expect(page.getByLabel('Email')).toBeVisible();
   await expect(page.getByLabel('Password')).toBeVisible();

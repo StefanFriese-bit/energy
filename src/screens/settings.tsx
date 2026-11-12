@@ -160,13 +160,13 @@ function HiveSettings() {
     return (
       <section class="card">
         <b>Hive</b>
-        <p>Signed in as <b>{signedInAs()}</b>{hs.list.length ? ` · ${hs.list.length} thermostat${hs.list.length === 1 ? '' : 's'} found` : ''}.</p>
+        <p>Signed in as <b>{signedInAs()}</b>{hs.list.length ? ` · ${hs.list.length} thermostat${hs.list.length === 1 ? '' : 's'} found` : ''}{hs.at ? (hs.water.length ? ' · hot water found' : ' · no hot water control listed') : ''}.</p>
         {hs.error && <Problem retry={reloadHeating}>{hs.error}</Problem>}
         <div class="actions">
-          <button type="button" class="btn" disabled={!hs.list.length} onClick={async () => { await navigator.clipboard.writeText(snapshot(hs.list)); setCopied(true); }}>{copied ? 'Copied ✓' : 'Copy what Hive sent'}</button>
+          <button type="button" class="btn" disabled={!hs.list.length} onClick={async () => { await navigator.clipboard.writeText(snapshot(hs.list, hs.water)); setCopied(true); }}>{copied ? 'Copied ✓' : 'Copy what Hive sent'}</button>
           <button type="button" class="btn danger" onClick={() => { signOut(); force((x) => x + 1); void reloadHeating(); }}>Sign out</button>
         </div>
-        <p class="small">"Copy what Hive sent" copies the thermostat's details (no password or sign-in pass) to paste to Claude if something looks wrong.</p>
+        <p class="small">"Copy what Hive sent" copies the thermostat's and hot water's details (no password or sign-in pass) to paste to Claude if something looks wrong.</p>
       </section>
     );
   }
